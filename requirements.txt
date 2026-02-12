@@ -5,4 +5,5 @@ tqdm
 Pillow
 pyperclip
 numpy
-opencv-python
+glfw
+PyOpenGL
