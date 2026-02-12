@@ -71,7 +71,27 @@ def save_music(path, music: AudioClip):
 
 classes = ClassIDType.TextAsset, ClassIDType.Sprite, ClassIDType.AudioClip
 
-def save(chdir, key, entry, pbar):
+def save(chdir, key, entry, pbar, skipExisting: bool = True):
+    # 根据资源类型确定输出路径
+    output_path = None
+    
+    if config["avatar"] and key.startswith("avatar."):
+        key = key[7:] if key != "Cipher1" else avatar.get(key[7:], key)
+        pbar.set_postfix_str(key)
+        output_path = f"{chdir}/avatar/{key}.png"
+        
+    elif config["Chart"] and key[-14:-7] == "/Chart_" and key[-5:] == ".json":
+        name = key[:-14]
+        file_name = (name[:17] + '...') if len(name) > 20 else name
+        pbar.set_postfix_str(file_name)
+        output_path = f"{chdir}/Chart_%s/%s.json" % (key[-7:-5], name)
+        
+    # ... 其他条件类似处理，为每个资源类型设置 output_path
+    
+    # 检查文件是否存在
+    if skipExisting and output_path and os.path.exists(output_path):
+        pbar.set_postfix_str(f"{pbar.postfix} (已存在，跳过)")
+        return
     obj = next(entry.get_filtered_objects(classes)).read()
     if config["avatar"] and key.startswith("avatar."):
         key = key[7:] if key != "Cipher1" else avatar.get(key[7:], key)

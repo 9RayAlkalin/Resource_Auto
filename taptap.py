@@ -46,6 +46,6 @@ if __name__ == "__main__":
     r = taptap(165287)
     print()
     print(r)
-    wget.download(r["data"]["apk"]["download"], f"Phigros_{r["data"]["apk"]["version_name"]}.apk")
+    wget.download(r['data']['apk']['download'], f"Phigros_{r['data']['apk']['version_name']}.apk")
     print()
     print("finished!")

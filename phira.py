@@ -5,10 +5,16 @@ import json
 from concurrent.futures import ThreadPoolExecutor
 from tqdm import tqdm
 
-def create_zip_file(chdir, id, info, levels, level, pbar):
+def create_zip_file(chdir, id, info, levels, level, pbar, skipExisting: bool = True):
     file_name = (id[:17] + '...') if len(id) > 20 else id
     pbar.set_postfix_str(file_name)
     pez_filename = f"{chdir}/phira/{levels[level]}/{id}-{levels[level]}.pez"
+    
+    # 检查文件是否存在
+    if skipExisting and os.path.exists(pez_filename):
+        pbar.set_postfix_str(f"{file_name} (已存在，跳过)")
+        pbar.update(1)
+        return
     num = ".0"
     if os.path.exists(f"{chdir}/Chart_{levels[level]}/{id}{num}.json"):
         with ZipFile(pez_filename, "w", compression=ZIP_DEFLATED) as pez:
@@ -33,10 +39,16 @@ def create_zip_file(chdir, id, info, levels, level, pbar):
                 pez.write(f"{chdir}/music/{id}{num}_AT.ogg", f"{id}_AT.ogg")
     pbar.update(1)
 
-def create_file(chdir, id, info, levels, level, pbar):
+def create_file(chdir, id, info, levels, level, pbar, skipExisting: bool = True):
     file_name = (id[:17] + '...') if len(id) > 20 else id
     pbar.set_postfix_str(file_name)
     dir_path = f"{chdir}/phira/{levels[level]}/{id}-{levels[level]}"
+    
+    # 检查文件夹是否存在
+    if skipExisting and os.path.exists(dir_path):
+        pbar.set_postfix_str(f"{file_name} (已存在，跳过)")
+        pbar.update(1)
+        return
     num = ".0"
     os.makedirs(dir_path, exist_ok=True)
 
@@ -54,7 +66,7 @@ def create_file(chdir, id, info, levels, level, pbar):
 
     pbar.update(1)
 
-def run(chdir: str, nozip: bool):
+def run(chdir: str, nozip: bool, skipExisting: bool = True):
     levels = ["EZ", "HD", "IN", "AT"]
 
     shutil.rmtree(os.path.join(chdir, "phira"), True)
@@ -88,12 +100,12 @@ def run(chdir: str, nozip: bool):
         with tqdm(total=len(tasks), desc="CreatePEZ") as pbar:
             with ThreadPoolExecutor() as executor:
                 for id, info, levels, level in tasks:
-                    executor.submit(create_file, chdir, id, info, levels, level, pbar)
+                    executor.submit(create_file, chdir, id, info, levels, level, pbar, skipExisting)
     else:
         with tqdm(total=len(tasks), desc="CreatePEZ") as pbar:
             with ThreadPoolExecutor() as executor:
                 for id, info, levels, level in tasks:
-                    executor.submit(create_zip_file, chdir, id, info, levels, level, pbar)
+                    executor.submit(create_zip_file, chdir, id, info, levels, level, pbar, skipExisting)
 
 if __name__ == "__main__":
-    run(os.getcwd(), False)
+    run(os.getcwd(), False, skipExisting=True)

@@ -1,0 +1,8 @@
+UnityPy==1.10.18
+fsb5
+wget
+tqdm
+Pillow
+pyperclip
+numpy
+opencv-python

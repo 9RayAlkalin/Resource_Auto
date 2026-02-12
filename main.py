@@ -34,24 +34,26 @@ if not (target_time is None or len(target_time) == 0):
 if setting.getboolean("autoUpdate"):
     times = 0
     r = taptap.taptap(165287)
-    print(f"TapTap: {r["data"]["apk"]["version_name"]} ({times})", end="\r")
-
-
+    print(f"TapTap: {r['data']['apk']['version_name']} ({times})", end="\r")
     while ver_now == r["data"]["apk"]["version_name"]:
         times += 1
         time.sleep(1)
         try:
             r = taptap.taptap(165287)
-            print(f"TapTap: {r["data"]["apk"]["version_name"]} ({times})")
+            print(f"TapTap: {r['data']['apk']['version_name']} ({times})")
         except:
             print("null")
     else:
         print()
-
-    #r = taptap.taptap(165287)
     ver = r["data"]["apk"]["version_name"]
-    chdir = os.path.join(ver)
-    #ver = "3.10.1"
+    # 固定输出到 data 文件夹
+    chdir = os.path.join("data")
+    print(f"输出目录设置为: {chdir}")
+    print(f"当前工作目录: {os.getcwd()}")
+    # 确保目录存在
+    if not os.path.exists(chdir):
+        os.makedirs(chdir, exist_ok=True)
+        print(f"创建目录: {chdir}")
     apk_name = f"Phigros_{ver}.apk"
     if os.path.exists(apk_name):
         print("Apk exists, skip download")
@@ -69,7 +71,7 @@ if setting.getboolean("autoUpdate"):
             apk_name = apk_name_input
 else:
     apk_name = f"Phigros_{ver_now}.apk"
-    chdir = os.path.join(ver_now)
+    chdir = os.path.join("data")
 
 if not os.path.exists(chdir):
     os.makedirs(chdir)
@@ -145,6 +147,17 @@ if setting.getboolean("autoRender"):
     pushRender(difficulty[2], output_directory)
     pushRender(difficulty[3], output_directory)
     print(f"elapsed time: {time.time() - start_time} s")
+
+version_info = {
+    "version": ver,
+    "extracted_date": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    "apk_name": apk_name
+}
+
+with open(os.path.join(chdir, "version.json"), "w", encoding="utf-8") as f:
+    json.dump(version_info, f, indent=2, ensure_ascii=False)
+
+print(f"版本信息已保存: {ver}")
 
 
 input("Finish")

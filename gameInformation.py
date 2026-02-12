@@ -75,7 +75,17 @@ class ByteReader:
         return result
     
 
-def run(path: str, chdir: str, outputCsv: bool = False):
+def run(path: str, chdir: str, outputCsv: bool = False, skipExisting: bool = True):
+    difficulty_path = os.path.join(chdir, 'difficulty.json')
+    info_path = os.path.join(chdir, 'info.json')
+    collection_path = os.path.join(chdir, 'collection.json')
+    avatar_path = os.path.join(chdir, 'avatar.json')
+    tips_path = os.path.join(chdir, 'tips.txt')
+    
+    if skipExisting and os.path.exists(difficulty_path) and os.path.exists(info_path) and \
+       os.path.exists(collection_path) and os.path.exists(avatar_path) and os.path.exists(tips_path):
+        print("游戏信息文件已存在，跳过提取")
+        return
     env = Environment()
     with zipfile.ZipFile(path) as apk:
         with apk.open("assets/bin/Data/globalgamemanagers.assets") as f:
@@ -207,4 +217,4 @@ def run(path: str, chdir: str, outputCsv: bool = False):
             f.write("\n")
             
 if __name__=="__main__":
-    run(sys.argv[1], os.getcwd())
+    run(sys.argv[1], os.getcwd(), skipExisting=True)
