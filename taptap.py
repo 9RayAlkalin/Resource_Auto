@@ -53,18 +53,21 @@ def _open(url: str, start: int = None, end: int = None):
     return urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=60)
 
 
-def _download_chunk(url: str, fd, start: int, end: int, progress: dict):
-    """Download bytes [start, end] to fd at offset start, with retries."""
+def _download_chunk(url: str, path: str, start: int, end: int, progress: dict):
+    """Download bytes [start, end] into path at offset start, with retries.
+
+    Each thread uses its own file handle (no shared fd), because os.pwrite
+    is unavailable on Windows. Chunks are disjoint, so no locking is needed.
+    """
     for attempt in range(CHUNK_RETRIES):
         try:
-            with _open(url, start, end) as resp:
-                offset = start
+            with _open(url, start, end) as resp, open(path, "r+b") as f:
+                f.seek(start)
                 while True:
                     data = resp.read(256 * 1024)
                     if not data:
                         break
-                    os.pwrite(fd, data, offset)
-                    offset += len(data)
+                    f.write(data)
                     with print_lock:
                         progress["done"] += len(data)
             return
@@ -110,15 +113,12 @@ def download_mt(url: str, path: str, threads: int = THREADS):
     t.start()
 
     tmp = path + ".part"
-    fd = os.open(tmp, os.O_RDWR | os.O_CREAT | os.O_TRUNC)
-    try:
-        os.ftruncate(fd, total)
-        with ThreadPoolExecutor(max_workers=len(ranges)) as pool:
-            futures = [pool.submit(_download_chunk, url, fd, s, e, progress) for s, e in ranges]
-            for fut in futures:
-                fut.result()
-    finally:
-        os.close(fd)
+    with open(tmp, "wb") as f:
+        f.truncate(total)
+    with ThreadPoolExecutor(max_workers=len(ranges)) as pool:
+        futures = [pool.submit(_download_chunk, url, tmp, s, e, progress) for s, e in ranges]
+        for fut in futures:
+            fut.result()
     t.join()
     os.replace(tmp, path)
     print(f"saved: {path} ({total / 1048576:.1f} MB)")
