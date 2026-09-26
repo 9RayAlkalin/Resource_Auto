@@ -196,6 +196,8 @@ def run(path: str, chdir: str, c):
     for i in range(len(table)):
         if table[i][1] != 65535:
             table[i][1] = table[table[i][1]][0]
+        if isinstance(table[i][1], str) and table[i][1].endswith(".bundle"):
+            table[i][1] = table[i][1].split("_")[-1]
     for i in range(len(table) - 1, -1, -1):
         if type(table[i][0]) == int or table[i][0][:15] == "Assets/Tracks/#" or table[i][0][:14] != "Assets/Tracks/" and table[i][0][:7] != "avatar.":
             del table[i]

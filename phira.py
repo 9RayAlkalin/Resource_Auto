@@ -5,12 +5,43 @@ import json
 from concurrent.futures import ThreadPoolExecutor
 from tqdm import tqdm
 
+def yaml_str(value):
+    """Safely format a string for YAML output."""
+    return json.dumps(value, ensure_ascii=False)
+
+def build_info_yml(info, id, level_name, level_idx):
+    difficulty = info["difficulty"][level_idx]
+    lines = [
+        f"name: {yaml_str(info['Name'])}",
+        f"difficulty: {difficulty}",
+        f"level: {yaml_str(f'{level_name}  Lv.{difficulty}')}",
+        f"charter: {yaml_str(info['Chater'][level_idx])}",
+        f"composer: {yaml_str(info['Composer'])}",
+        f"illustrator: {yaml_str(info['Illustrator'])}",
+        f"chart: {yaml_str(f'{id}.json')}",
+        f"music: {yaml_str(f'{id}.ogg')}",
+        f"illustration: {yaml_str(f'{id}.png')}",
+        "previewStart: 0.0",
+        "aspectRatio: 1.7777777777777777",
+        "backgroundDim: 0.6",
+        "lineLength: 6.0",
+        "offset: 0.0",
+        "tags: []",
+        "intro: \"\"",
+        "holdPartialCover: false",
+        "noteUniformScale: false",
+        "forceAspectRatio: false",
+        "foldAnimation: true",
+        "scoreTotal: 1000000",
+        "negativeLengthHold: true",
+    ]
+    return "\n".join(lines) + "\n"
+
 def create_zip_file(chdir, id, info, levels, level, pbar, skipExisting: bool = True):
     file_name = (id[:17] + '...') if len(id) > 20 else id
     pbar.set_postfix_str(file_name)
     pez_filename = f"{chdir}/phira/{levels[level]}/{id}-{levels[level]}.pez"
-    
-    # 检查文件是否存在
+
     if skipExisting and os.path.exists(pez_filename):
         pbar.set_postfix_str(f"{file_name} (已存在，跳过)")
         pbar.update(1)
@@ -18,13 +49,7 @@ def create_zip_file(chdir, id, info, levels, level, pbar, skipExisting: bool = T
     num = ".0"
     if os.path.exists(f"{chdir}/Chart_{levels[level]}/{id}{num}.json"):
         with ZipFile(pez_filename, "w", compression=ZIP_DEFLATED) as pez:
-            pez.writestr(
-                "info.txt",
-                "#\nName: %s\nSong: %s.ogg\nPicture: %s.png\nChart: %s.json\nLevel: %s  Lv.%s\nComposer: %s\nIllustrator: %s\nCharter: %s" % (
-                    info["Name"], id, id, id, levels[level], info["difficulty"][level], 
-                    info["Composer"], info["Illustrator"], info["Chater"][level]
-                )
-            )
+            pez.writestr("info.yml", build_info_yml(info, id, levels[level], level))
 
             pez.write(f"{chdir}/Chart_{levels[level]}/{id}{num}.json", f"{id}.json")
             pez.write(f"{chdir}/Illustration/{id}{num}.png", f"{id}.png")
@@ -43,8 +68,7 @@ def create_file(chdir, id, info, levels, level, pbar, skipExisting: bool = True)
     file_name = (id[:17] + '...') if len(id) > 20 else id
     pbar.set_postfix_str(file_name)
     dir_path = f"{chdir}/phira/{levels[level]}/{id}-{levels[level]}"
-    
-    # 检查文件夹是否存在
+
     if skipExisting and os.path.exists(dir_path):
         pbar.set_postfix_str(f"{file_name} (已存在，跳过)")
         pbar.update(1)
@@ -52,13 +76,8 @@ def create_file(chdir, id, info, levels, level, pbar, skipExisting: bool = True)
     num = ".0"
     os.makedirs(dir_path, exist_ok=True)
 
-    with open(f"{dir_path}/info.txt", "w") as f:
-        f.write(
-            "#\nName: %s\nSong: %s.ogg\nPicture: %s.png\nChart: %s.json\nLevel: %s  Lv.%s\nComposer: %s\nIllustrator: %s\nCharter: %s" % (
-                info["Name"], id, id, id, levels[level], info["difficulty"][level], 
-                info["Composer"], info["Illustrator"], info["Chater"][level]
-            )
-        )
+    with open(f"{dir_path}/info.yml", "w", encoding="utf-8") as f:
+        f.write(build_info_yml(info, id, levels[level], level))
 
     shutil.copy(f"{chdir}/Chart_{levels[level]}/{id}{num}.json", f"{dir_path}/{id}.json")
     shutil.copy(f"{chdir}/Illustration/{id}{num}.png", f"{dir_path}/{id}.png")

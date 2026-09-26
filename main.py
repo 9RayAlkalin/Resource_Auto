@@ -1,5 +1,5 @@
 import datetime
-import wget
+import json
 from configparser import ConfigParser
 import os
 import time
@@ -59,7 +59,7 @@ if setting.getboolean("autoUpdate"):
         print("Apk exists, skip download")
     elif setting.getboolean("autoDownload"):
         start_time = time.time()
-        wget.download(r["data"]["apk"]["download"], apk_name)
+        taptap.download_mt(r["data"]["apk"]["download"], apk_name)
         print(f"elapsed time: {time.time() - start_time} s")
     else:
         print(r["data"]["apk"]["download"])
