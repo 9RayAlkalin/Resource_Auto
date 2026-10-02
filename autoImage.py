@@ -29,6 +29,20 @@ SHADER_ALPHA = 0.5
 SHADER_POWER = 0.035
 ILLUSTRATION_RAISE_PX = 40
 
+# 与 trigridRenderer.DEFAULT_PARAMS 保持一致（GL 不可用时软件回退路径使用）
+TRIGRID_DEFAULT_PARAMS = {
+    "tex_size": (0.2, 0.25),
+    "base_color": (0.018, 0.018, 0.018, 0.4),
+    "face_color": (0.702, 0.9449554, 1.0, 1.0),
+    "face_brightness": 0.1,
+    "grid_color": (1.0, 1.0, 1.0, 1.0),
+    "grid_brightness": 0.4,
+    "glow_color": (0.383, 0.8843222, 1.0, 1.0),
+    "glow_brightness": 0.71,
+    "always_on": False,
+    "glow_ooroff": False,
+}
+
 # 字体相关常量
 FONT_PATH = "font.ttf"
 FONT_SIZE_LARGE = 66
@@ -284,8 +298,14 @@ def apply_trigrid_effect(base_image, params=None, t=0.0, use_gl=True):
     if params is None:
         params = TRIGRID_DEFAULT_PARAMS
 
+    shader_fn = globals().get("render_trigrid_shader")
+    if shader_fn is None:
+        # commit 4ef9067 引用了从未实现的软件着色器；GL 不可用时跳过网格而非崩溃
+        print("  警告: NumPy 版 TriGrid 着色器未实现，跳过网格")
+        return None
+
     base_arr = np.asarray(base_image, dtype=np.float32) / 255.0
-    shader_arr = render_trigrid_shader(base_arr, params, t)
+    shader_arr = shader_fn(base_arr, params, t)
     shader_img = Image.fromarray((shader_arr * 255).astype(np.uint8)).convert('RGBA')
     return shader_img
 

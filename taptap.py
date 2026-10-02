@@ -18,6 +18,10 @@ CHUNK_RETRIES = 5
 print_lock = threading.Lock()
 
 
+class DownloadCancelled(Exception):
+    """Raised when a download is aborted via stop_check."""
+
+
 def taptap(appid: int):
     uid = uuid.uuid4()
     #VN_CODE = 206012000, 281001004
@@ -53,17 +57,21 @@ def _open(url: str, start: int = None, end: int = None):
     return urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=60)
 
 
-def _download_chunk(url: str, path: str, start: int, end: int, progress: dict):
+def _download_chunk(url: str, path: str, start: int, end: int, progress: dict, stop_check=None):
     """Download bytes [start, end] into path at offset start, with retries.
 
     Each thread uses its own file handle (no shared fd), because os.pwrite
     is unavailable on Windows. Chunks are disjoint, so no locking is needed.
     """
     for attempt in range(CHUNK_RETRIES):
+        if stop_check is not None and stop_check():
+            raise DownloadCancelled()
         try:
             with _open(url, start, end) as resp, open(path, "r+b") as f:
                 f.seek(start)
                 while True:
+                    if stop_check is not None and stop_check():
+                        raise DownloadCancelled()
                     data = resp.read(256 * 1024)
                     if not data:
                         break
@@ -79,20 +87,33 @@ def _download_chunk(url: str, path: str, start: int, end: int, progress: dict):
             time.sleep(1 + attempt)
 
 
-def download_mt(url: str, path: str, threads: int = THREADS):
-    """Multi-threaded download using HTTP Range requests."""
+def download_mt(url: str, path: str, threads: int = THREADS, progress_cb=None, stop_check=None):
+    """Multi-threaded download using HTTP Range requests.
+
+    progress_cb: optional callable(pct: int, done: int, total: int)
+    stop_check: optional callable() -> bool; when it returns True the download
+        aborts with KeyboardInterrupt-like CancelledError.
+    """
     with _open(url) as resp:
         total = int(resp.headers.get("Content-Length", 0))
         accept_ranges = resp.headers.get("Accept-Ranges", "none").lower() != "none"
 
     if total == 0 or not accept_ranges:
         print("server does not support range requests, falling back to single thread")
+        done = 0
         with _open(url) as resp, open(path, "wb") as f:
             while True:
+                if stop_check is not None and stop_check():
+                    raise DownloadCancelled()
                 data = resp.read(256 * 1024)
                 if not data:
                     break
                 f.write(data)
+                done += len(data)
+                if progress_cb is not None and total > 0:
+                    progress_cb(done * 100 // total, done, total)
+        if progress_cb is not None:
+            progress_cb(100, done, total)
         return
 
     chunk = (total + threads - 1) // threads
@@ -104,7 +125,9 @@ def download_mt(url: str, path: str, threads: int = THREADS):
             with print_lock:
                 pct = progress["done"] * 100 // total
                 print(f"\r{pct:3d}%  {progress['done'] / 1048576:.1f}/{total / 1048576:.1f} MB", end="")
-            if progress["done"] >= total:
+            if progress_cb is not None:
+                progress_cb(pct, progress["done"], total)
+            if progress["done"] >= total or (stop_check is not None and stop_check()):
                 print()
                 return
             time.sleep(0.5)
@@ -113,14 +136,27 @@ def download_mt(url: str, path: str, threads: int = THREADS):
     t.start()
 
     tmp = path + ".part"
-    with open(tmp, "wb") as f:
-        f.truncate(total)
-    with ThreadPoolExecutor(max_workers=len(ranges)) as pool:
-        futures = [pool.submit(_download_chunk, url, tmp, s, e, progress) for s, e in ranges]
-        for fut in futures:
-            fut.result()
+    try:
+        with open(tmp, "wb") as f:
+            f.truncate(total)
+        with ThreadPoolExecutor(max_workers=len(ranges)) as pool:
+            futures = [pool.submit(_download_chunk, url, tmp, s, e, progress, stop_check) for s, e in ranges]
+            for fut in futures:
+                fut.result()
+    except DownloadCancelled:
+        print(f"\ncancelled: {tmp}")
+        with print_lock:
+            progress["done"] = total  # 让 show_progress 线程退出
+        t.join(timeout=2)
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
     t.join()
     os.replace(tmp, path)
+    if progress_cb is not None:
+        progress_cb(100, total, total)
     print(f"saved: {path} ({total / 1048576:.1f} MB)")
 
 

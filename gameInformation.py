@@ -88,20 +88,42 @@ def run(path: str, chdir: str, outputCsv: bool = False, skipExisting: bool = Tru
         return
     env = Environment()
     with zipfile.ZipFile(path) as apk:
-        with apk.open("assets/bin/Data/globalgamemanagers.assets") as f:
-            env.load_file(f.read(), name="assets/bin/Data/globalgamemanagers.assets")
-        with apk.open("assets/bin/Data/level0") as f:
-            env.load_file(f.read())
+        names = set(apk.namelist())
+        if "assets/bin/Data/globalgamemanagers.assets" in names:
+            # 旧版打包结构：globalgamemanagers.assets + level0
+            with apk.open("assets/bin/Data/globalgamemanagers.assets") as f:
+                env.load_file(f.read(), name="assets/bin/Data/globalgamemanagers.assets")
+            with apk.open("assets/bin/Data/level0") as f:
+                env.load_file(f.read())
+        elif "assets/bin/Data/data.unity3d" in names:
+            # 4.0.1+ 打包结构：合并为 UnityFS 包
+            with apk.open("assets/bin/Data/data.unity3d") as f:
+                env.load_file(f.read(), name="assets/bin/Data/data.unity3d")
+        else:
+            raise RuntimeError(
+                "APK 中未找到游戏数据文件（globalgamemanagers.assets / data.unity3d）")
+    information = collection = tips = None
     for obj in env.objects:
         if obj.type.name != "MonoBehaviour":
             continue
-        data = obj.read()
-        if data.m_Script.get_obj().read().name == "GameInformation":
+        try:
+            data = obj.read()
+            script_name = data.m_Script.get_obj().read().name
+        except Exception:
+            # 个别对象引用了未打包的外部脚本文件，跳过
+            continue
+        if script_name == "GameInformation":
             information = data.raw_data.tobytes()
-        elif data.m_Script.get_obj().read().name == "GetCollectionControl":
+        elif script_name == "GetCollectionControl":
             collection = data.raw_data.tobytes()
-        elif data.m_Script.get_obj().read().name == "TipsProvider":
+        elif script_name == "TipsProvider":
             tips = data.raw_data.tobytes()
+
+    if information is None or collection is None or tips is None:
+        missing = [n for n, v in (("GameInformation", information),
+                                  ("GetCollectionControl", collection),
+                                  ("TipsProvider", tips)) if v is None]
+        raise RuntimeError(f"未在 APK 中找到: {', '.join(missing)}")
 
 
     reader = ByteReader(information)

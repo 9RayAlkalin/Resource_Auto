@@ -10,6 +10,7 @@ import shutil
 import sys
 import threading
 import time
+import traceback
 from tqdm import tqdm
 from UnityPy import Environment
 from UnityPy.classes import AudioClip
@@ -40,21 +41,28 @@ def io():
         item = queue_in.get()
         if item is None:
             break
-        elif isinstance(item, list):
-            env = Environment()
-            for i in range(1, len(item)):
-                env.load_file(item[0].read(f"assets/aa/Android/{item[i][1]}"), name=item[i][0])
-            queue_out.put(env)
-            del env
-        else:
-            path, resource = item
-            if isinstance(resource, BytesIO):
-                with resource:
-                    with open(path, "wb") as f:
-                        f.write(resource.getbuffer())
+        try:
+            if isinstance(item, list):
+                env = Environment()
+                for i in range(1, len(item)):
+                    env.load_file(item[0].read(f"assets/aa/Android/{item[i][1]}"), name=item[i][0])
+                queue_out.put(env)
+                del env
             else:
-                with open(path, "wb") as f:
-                    f.write(resource)
+                path, resource = item
+                os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+                if isinstance(resource, BytesIO):
+                    with resource:
+                        with open(path, "wb") as f:
+                            f.write(resource.getbuffer())
+                else:
+                    with open(path, "wb") as f:
+                        f.write(resource)
+        except Exception:
+            # 单个文件失败不能让 IO 线程退出，否则主线程会阻塞在 queue_out.get()
+            traceback.print_exc()
+            if isinstance(item, list):
+                queue_out.put(Environment())
 
 def save_image(path, image):
     bytesIO = BytesIO()
@@ -71,14 +79,41 @@ def save_music(path, music: AudioClip):
 
 classes = ClassIDType.TextAsset, ClassIDType.Sprite, ClassIDType.AudioClip
 
+progress_cb = None
+stop_check = None
+
+
+class ExtractCancelled(Exception):
+    """Raised when extraction is aborted via stop_check."""
+
+
+def _pbar(iterable=None, total=None, desc="", **kwargs):
+    """tqdm wrapper: when progress_cb is set, forward n/total/postfix to it."""
+    cb = progress_cb
+    if cb is None:
+        return tqdm(iterable, total=total, desc=desc, **kwargs)
+
+    class _GuiTqdm(tqdm):
+        def update(self, n=1):
+            result = super().update(n)
+            cb(self.n, self.total, self.postfix or "")
+            return result
+
+        def set_postfix_str(self, s, **kw):
+            result = super().set_postfix_str(s, **kw)
+            cb(self.n, self.total, s)
+            return result
+
+    return _GuiTqdm(iterable, total=total, desc=desc, **kwargs)
+
 def save(chdir, key, entry, pbar, skipExisting: bool = True):
     # 根据资源类型确定输出路径
     output_path = None
     
     if config["avatar"] and key.startswith("avatar."):
-        key = key[7:] if key != "Cipher1" else avatar.get(key[7:], key)
-        pbar.set_postfix_str(key)
-        output_path = f"{chdir}/avatar/{key}.png"
+        avatar_name = key[7:] if key != "Cipher1" else avatar.get(key[7:], key)
+        pbar.set_postfix_str(avatar_name)
+        output_path = f"{chdir}/avatar/{avatar_name}.png"
         
     elif config["Chart"] and key[-14:-7] == "/Chart_" and key[-5:] == ".json":
         name = key[:-14]
@@ -154,14 +189,21 @@ def save(chdir, key, entry, pbar, skipExisting: bool = True):
         pbar.set_postfix_str(file_name)
         save_music(f"{chdir}/music/{name}_{level}.ogg", obj)
 
-def run(path: str, chdir: str, c):
-    global config
+def run(path: str, chdir: str, c, progress_callback=None, stop_checker=None):
+    global config, progress_cb, stop_check
     config = c
+    progress_cb = progress_callback
+    stop_check = stop_checker
+    # 上次异常退出可能在队列里残留脏数据，清掉避免下次运行读到旧 env
+    while not queue_out.empty():
+        queue_out.get_nowait()
+    while not queue_in.empty():
+        queue_in.get_nowait()
     with ZipFile(path) as apk:
         with apk.open("assets/aa/catalog.json") as f:
             data = json.load(f)
 
-    type_list = ["avatar", "Chart_Legacy", "Chart_EZ", "Chart_HD", "Chart_IN", "Chart_AT", "IllustrationBlur", "IllustrationLowRes", "Illustration", "music"]
+    type_list = ["avatar", "IllustrationBlur", "IllustrationLowRes", "Illustration", "music"]
     for directory in filter(lambda x: getbool(x), type_list):
         shutil.rmtree(os.path.join(chdir, directory), True)
         os.mkdir(os.path.join(chdir, directory))
@@ -204,6 +246,21 @@ def run(path: str, chdir: str, c):
         elif table[i][0][:14] == "Assets/Tracks/":
             table[i][0] = table[i][0][14:]
 
+    # 谱面目录从 catalog 表动态推导（4.0.1 起新增 Chart_SP 等难度），并清理表中已不存在的目录
+    if config["Chart"]:
+        chart_dirs = set()
+        for k, _ in table:
+            if k[-14:-7] == "/Chart_" and k[-5:] == ".json":
+                chart_dirs.add("Chart_" + k[-7:-5])
+            elif k[-18:-11] == "/Chart_" and k[-5:] == ".json":
+                chart_dirs.add("Chart_" + k[-11:-5])
+        for name in os.listdir(chdir):
+            if name.startswith("Chart_") and name not in chart_dirs:
+                shutil.rmtree(os.path.join(chdir, name), True)
+        for d in sorted(chart_dirs):
+            shutil.rmtree(os.path.join(chdir, d), True)
+            os.mkdir(os.path.join(chdir, d))
+
     global avatar
     if config["avatar"]:
         with open(os.path.join(chdir, "avatar.json"), encoding="utf8") as f:
@@ -213,53 +270,62 @@ def run(path: str, chdir: str, c):
     thread.start()
 
     global pool
-    with ThreadPoolExecutor() as pool:
-        if all(v == 0 for v in config["UPDATE"].values()):
-            with ZipFile(path) as apk:
-                size = 0
-                batch = [apk]
-                pbar = tqdm(table, desc="Extract")
-                for key, entry in pbar:
-                    batch.append((key, entry, pbar))
-                    size += apk.getinfo(f"assets/aa/Android/{entry}").file_size
-                    if size > 32 * 1024 * 1024:
-                        queue_in.put(batch)
-                        env = queue_out.get()
-                        for ikey, ientry in env.files.items():
-                            save(chdir, ikey, ientry, pbar)
-                        size = 0
-                        batch = [apk]
-                queue_in.put(batch)
-                env = queue_out.get()
-                for ikey, ientry in env.files.items():
-                    save(chdir, ikey, ientry, pbar)
-        else:
-            l = []
-            with open(os.path.join(chdir, "difficulty.json"), encoding="utf8") as f:
-                l = json.load(f)
-            lName = [item[0] for item in l]
-            index1 = lName.index("Doppelganger.LeaF")
-            index2 = lName.index("Poseidon.1112vsStar")
-            # index1 = l.index("ENERGYSYNERGYMATRIX.Tanchiky") + 1 # 指定导出
-            del lName[index2:len(l) - config["UPDATE"]["side_story"]] 
-            del lName[index1:index2 - config["UPDATE"]["other_song"]] 
-            del lName[:index1 - config["UPDATE"]["main_story"]]
-
-            env = Environment()
-            with ZipFile(path) as apk:
-                # pbar = tqdm(table, desc="Extract")
-                with tqdm(table, desc="FindChart") as pbar:
+    try:
+        with ThreadPoolExecutor() as pool:
+            if all(v == 0 for v in config["UPDATE"].values()):
+                with ZipFile(path) as apk:
+                    size = 0
+                    batch = [apk]
+                    pbar = _pbar(table, desc="Extract")
                     for key, entry in pbar:
-                        if key.startswith("avatar."):
-                            env.load_file(apk.read(f"assets/aa/Android/{entry}"), name=key)
-                        if any(key.startswith(f"{id}") for id in lName):
-                            env.load_file(apk.read(f"assets/aa/Android/{entry}"), name=key)
-                with tqdm(env.files.items(), desc="Extract") as pbar:
-                    for ikey, ientry in pbar:
+                        if stop_check is not None and stop_check():
+                            raise ExtractCancelled()
+                        batch.append((key, entry, pbar))
+                        size += apk.getinfo(f"assets/aa/Android/{entry}").file_size
+                        if size > 32 * 1024 * 1024:
+                            queue_in.put(batch)
+                            env = queue_out.get()
+                            for ikey, ientry in env.files.items():
+                                save(chdir, ikey, ientry, pbar)
+                            size = 0
+                            batch = [apk]
+                    queue_in.put(batch)
+                    env = queue_out.get()
+                    for ikey, ientry in env.files.items():
                         save(chdir, ikey, ientry, pbar)
+            else:
+                l = []
+                with open(os.path.join(chdir, "difficulty.json"), encoding="utf8") as f:
+                    l = json.load(f)
+                lName = [item[0] for item in l]
+                index1 = lName.index("Doppelganger.LeaF")
+                index2 = lName.index("Poseidon.1112vsStar")
+                # index1 = l.index("ENERGYSYNERGYMATRIX.Tanchiky") + 1 # 指定导出
+                del lName[index2:len(l) - config["UPDATE"]["side_story"]] 
+                del lName[index1:index2 - config["UPDATE"]["other_song"]] 
+                del lName[:index1 - config["UPDATE"]["main_story"]]
 
-    queue_in.put(None)
-    thread.join()
+                env = Environment()
+                with ZipFile(path) as apk:
+                    # pbar = _pbar(table, desc="Extract")
+                    with _pbar(table, desc="FindChart") as pbar:
+                        for key, entry in pbar:
+                            if stop_check is not None and stop_check():
+                                raise ExtractCancelled()
+                            if key.startswith("avatar."):
+                                env.load_file(apk.read(f"assets/aa/Android/{entry}"), name=key)
+                            if any(key.startswith(f"{id}") for id in lName):
+                                env.load_file(apk.read(f"assets/aa/Android/{entry}"), name=key)
+                    with _pbar(env.files.items(), desc="Extract") as pbar:
+                        for ikey, ientry in pbar:
+                            if stop_check is not None and stop_check():
+                                raise ExtractCancelled()
+                            save(chdir, ikey, ientry, pbar)
+    finally:
+        queue_in.put(None)
+        thread.join()
+        progress_cb = None
+        stop_check = None
 
 if __name__ == "__main__":
     c = ConfigParser()

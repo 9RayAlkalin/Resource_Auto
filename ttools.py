@@ -7,12 +7,18 @@ def schartTask(dir, path):
     makeOneTask(dir, path)
 
 # Single Folder
-def sfileTask(dir, path, output):
-    for file in os.listdir(path):
-        if file.endswith(".pez"):
-            command = f"--render {os.path.join(path, file)} --output {output}"
-            #makeTask(dir,command)
-            makeOneTask(dir, os.path.join(path, file), output)
+def sfileTask(dir, path, output, progress_cb=None, stop_check=None):
+    files = [f for f in os.listdir(path) if f.endswith(".pez")]
+    total = len(files)
+    for i, file in enumerate(files, 1):
+        if stop_check is not None and stop_check():
+            print("render cancelled")
+            return
+        command = f"--render {os.path.join(path, file)} --output {output}"
+        #makeTask(dir,command)
+        makeOneTask(dir, os.path.join(path, file), output)
+        if progress_cb is not None:
+            progress_cb(i, total, file)
 
 # All Folder
 def fileTask(dir, path):
