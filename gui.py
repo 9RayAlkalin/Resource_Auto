@@ -9,6 +9,7 @@
 import os
 import sys
 import threading
+import time
 import traceback
 from configparser import ConfigParser
 
@@ -152,12 +153,15 @@ class LogWidget(QPlainTextEdit):
 class PipelineWorker(QThread):
     """在后台线程中顺序执行步骤。"""
 
-    progress = pyqtSignal(int, int, str)          # current, total, message
+    progress = pyqtSignal(float, float, str)      # current, total, message（float 避免字节数>INT_MAX 时溢出）
     step_status = pyqtSignal(str, str)            # step_id, status
     run_finished = pyqtSignal(bool, str)          # success, message
 
     def __init__(self, step_ids, ctx, parent=None):
         super().__init__(parent)
+        # macOS 上 QThread 默认栈仅 ~512KB，UnityPy 等深层 import 链会
+        # 触发 RecursionError: Stack overflow，显式放大到与 Python 线程一致
+        self.setStackSize(16 * 1024 * 1024)
         self.step_ids = step_ids
         self.ctx = ctx
 
@@ -175,7 +179,7 @@ class PipelineWorker(QThread):
                 print(f"===== [{step.name}] =====")
 
                 def on_progress(cur, total, msg, _name=step.name):
-                    self.progress.emit(int(cur or 0), int(total or 0),
+                    self.progress.emit(float(cur or 0), float(total or 0),
                                        f"{_name}: {msg}" if msg else _name)
 
                 step.func(self.ctx, on_progress, self.ctx.stop)
@@ -237,10 +241,13 @@ class StepRow(QWidget):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Phigros Resource_Auto")
-        self.resize(1100, 760)
+        self.setWindowTitle("Phigros Resource Auto")
+        self.setMinimumSize(640, 540)
         self.worker = None
         self.ctx = None
+        self._stage_base = "就绪"
+        self._rate_state = None
+        self._rate_text = ""
         self._stdout = sys.stdout
         self._stderr = sys.stderr
 
@@ -257,6 +264,13 @@ class MainWindow(QMainWindow):
 
         self._install_stream_redirect()
         self.load_config_to_form()
+
+        # 依据内容自适应窗口大小，限制在屏幕可用区域内，避免固定 1100x760 过大
+        hint = self.sizeHint()
+        geo = QApplication.primaryScreen().availableGeometry()
+        w = min(hint.width() + 120, geo.width() - 40)
+        h = min(hint.height() + 90, geo.height() - 80)
+        self.resize(max(720, w), max(540, h))
 
     # ------------------------------------------------------------ UI 构建
 
@@ -521,19 +535,81 @@ class MainWindow(QMainWindow):
             row.set_status(status)
 
     def on_progress(self, current, total, message):
+        if message:
+            self._stage_base = message
+        # 速率/百分比用原始值计算（下载为字节数）
+        self._update_rate(float(current or 0), float(total or 0))
+        # 进度条可能收到超过 int32 的值（如 APK 3.5GB 字节数），
+        # 统一缩放避免 QProgressBar.setRange OverflowError
+        INT_MAX = 2147483647
+        current = float(current or 0)
+        total = float(total or 0)
         if total > 0:
-            if self.progress_bar.maximum() != total:
-                self.progress_bar.setRange(0, total)
-            self.progress_bar.setValue(min(current, total))
+            if total > INT_MAX:
+                current = current * INT_MAX / total
+                total = float(INT_MAX)
+            if self.progress_bar.maximum() != int(total):
+                self.progress_bar.setRange(0, int(total))
+            self.progress_bar.setValue(min(int(current), int(total)))
         else:
             self.progress_bar.setRange(0, 0)
-        if message:
-            self.stage_label.setText(message)
+
+    def _update_rate(self, current, total):
+        """在标签后追加 百分比/速度/预计剩余时间（按进度回调到达速率推算）。"""
+        now = time.monotonic()
+        pct = ""
+        if total > 0:
+            pct = "" if "%" in self._stage_base else f" ({current * 100 / total:.1f}%)"
+            last = self._rate_state
+            if last is None or last["total"] != total:
+                # 新的进度流：重置速率缓存
+                self._rate_state = {"t": now, "c": current, "total": total}
+                self._rate_text = ""
+            else:
+                dt = now - last["t"]
+                delta = current - last["c"]
+                # 窗口不够长时不重置锚点，继续累积到可计算为止
+                if delta > 0 and dt >= 0.2:
+                    rate = delta / dt
+                    self._rate_text = (
+                        f" | {self._fmt_rate(rate)}"
+                        f" | 预计剩余 {self._fmt_eta((total - current) / rate)}")
+                    self._rate_state = {"t": now, "c": current, "total": total}
+                elif delta <= 0 and dt >= 2.0:
+                    # 长时间无进度（如大文件处理中），重置锚点避免速率失真
+                    self._rate_state = {"t": now, "c": current, "total": total}
+        else:
+            self._rate_state = None
+            self._rate_text = ""
+        self.stage_label.setText(f"{self._stage_base}{pct}{self._rate_text}")
+
+    @staticmethod
+    def _fmt_rate(rate):
+        # 速率量级大（字节/秒）时按 MB/s 显示，否则按 项/秒
+        if rate >= 100000:
+            return f"{rate / 1048576:.1f} MB/s"
+        if rate >= 100:
+            return f"{rate:.0f}/s"
+        if rate >= 1:
+            return f"{rate:.1f}/s"
+        return f"{rate:.3f}/s"
+
+    @staticmethod
+    def _fmt_eta(seconds):
+        seconds = int(seconds)
+        if seconds >= 3600:
+            return f"{seconds // 3600}时{(seconds % 3600) // 60:02d}分"
+        if seconds >= 60:
+            return f"{seconds // 60}:{seconds % 60:02d}"
+        return f"{seconds}秒"
 
     def on_run_finished(self, success, message):
         self._set_running(False)
         self.progress_bar.setRange(0, 1)
         self.progress_bar.setValue(1 if success else 0)
+        self._stage_base = message
+        self._rate_state = None
+        self._rate_text = ""
         self.stage_label.setText(message)
         if success:
             print("流程执行完成")
